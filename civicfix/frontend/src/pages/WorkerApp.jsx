@@ -120,7 +120,7 @@ function TaskCard({ complaint, onRefresh, idx }) {
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-200 rounded-xl h-28 flex items-center justify-center text-slate-400 text-xs overflow-hidden">
               {complaint.image_path
-                ? <img src={`/uploads/${complaint.image_path}`} alt="Before" className="w-full h-full object-cover" />
+                ? <img src={complaint.image_path.startsWith('http') ? complaint.image_path : `${axios.defaults.baseURL || ''}/uploads/${complaint.image_path.replace(/^\/uploads\//, '')}`} alt="Before" className="w-full h-full object-cover" />
                 : 'BEFORE (no image)'}
             </div>
             {!afterPrev ? (
