@@ -16,10 +16,29 @@ app = FastAPI(
     version     = "1.0.0",
 )
 
-# CORS — allow the Vite dev server
+# CORS — allow local development servers and production deployments
+default_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+]
+custom_origins = os.getenv("CORS_ORIGINS", "")
+if custom_origins:
+    origins = [orig.strip() for orig in custom_origins.split(",") if orig.strip()]
+    for d in default_origins:
+        if d not in origins:
+            origins.append(d)
+else:
+    from config import FRONTEND_URL
+    origins = list(default_origins)
+    if FRONTEND_URL and FRONTEND_URL not in origins:
+        origins.append(FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
+    allow_origins     = origins,
+    allow_origin_regex= os.getenv("CORS_ORIGIN_REGEX", r"https://.*\.vercel\.app|https://.*\.onrender\.com|https://.*\.netlify\.app"),
     allow_credentials = True,
     allow_methods     = ["*"],
     allow_headers     = ["*"],

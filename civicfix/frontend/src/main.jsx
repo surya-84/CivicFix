@@ -5,6 +5,12 @@ import App from './App.jsx'
 import './index.css'
 import 'leaflet/dist/leaflet.css'
 
+// Configure API Base URL for deployed environments (defaults to '' for local Vite proxy)
+const API_BASE_URL = import.meta.env.VITE_API_URL || ''
+if (API_BASE_URL) {
+  axios.defaults.baseURL = API_BASE_URL
+}
+
 // Global Axios Request Interceptor — attaches JWT Bearer token automatically
 axios.interceptors.request.use((config) => {
   const userStr = localStorage.getItem('civicfix_user')
