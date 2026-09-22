@@ -41,6 +41,30 @@ def _get_worker_ids(db: Session, user_id: int) -> List[int]:
     return ids
 
 
+def _is_super_admin(user: Optional[models.User]) -> bool:
+    if not user or user.role != "admin":
+        return False
+    if user.admin_level == "SUPER_ADMIN":
+        return True
+    perms = [p.strip() for p in (user.permissions or "").split(",") if p.strip()]
+    return "MANAGE_ADMINS" in perms or "ALL" in perms
+
+
+# ---------------------------------------------------------------------------
+# GET /api/complaints/workers — List eligible field workers (mirrored from admin)
+# ---------------------------------------------------------------------------
+@router.get("/workers", response_model=List[schemas.WorkerResponse])
+def get_complaint_workers(
+    complaint_id:  Optional[str] = None,
+    department_id: Optional[int] = None,
+    db:            Session       = Depends(get_db),
+    current_user:  models.User   = Depends(get_current_user),
+):
+    from routers.admins import list_workers
+    return list_workers(complaint_id=complaint_id, department_id=department_id, db=db, current_user=current_user)
+
+
+
 def _record_history(
     db: Session,
     complaint_id: str,
@@ -166,7 +190,7 @@ async def create_complaint(
 # ---------------------------------------------------------------------------
 # GET /api/complaints/my — get current user's authorized complaints
 # ---------------------------------------------------------------------------
-@router.get("/my")
+@router.get("/my", response_model=List[schemas.ComplaintResponse])
 def get_my_complaints(
     status:       Optional[str] = None,
     category:     Optional[str] = None,
@@ -177,7 +201,7 @@ def get_my_complaints(
     Returns only authorized complaints for the current authenticated user:
     - Citizen: ONLY their own complaints (user_id == current_user.id)
     - Worker: ONLY complaints assigned to them (worker_id in worker_ids)
-    - Admin: All complaints
+    - Admin: All complaints or scoped to department for Co-Admin
     """
     q = db.query(models.Complaint)
 
@@ -187,7 +211,9 @@ def get_my_complaints(
         worker_ids = _get_worker_ids(db, current_user.id)
         q = q.filter(models.Complaint.worker_id.in_(worker_ids))
     elif current_user.role == "admin":
-        pass  # Admin sees all
+        is_super = _is_super_admin(current_user)
+        if not is_super and current_user.department_id:
+            q = q.filter(models.Complaint.department_id == current_user.department_id)
 
     if status:
         q = q.filter(models.Complaint.status == status)
@@ -237,7 +263,7 @@ def get_public_feed(
 # ---------------------------------------------------------------------------
 # GET /api/complaints  — list with strict role-based privacy enforcement
 # ---------------------------------------------------------------------------
-@router.get("/")
+@router.get("/", response_model=List[schemas.ComplaintResponse])
 def list_complaints(
     status:       Optional[str]        = None,
     category:     Optional[str]        = None,
@@ -268,6 +294,9 @@ def list_complaints(
         worker_ids = _get_worker_ids(db, current_user.id)
         q = q.filter(models.Complaint.worker_id.in_(worker_ids))
     elif current_user.role == "admin":
+        is_super = _is_super_admin(current_user)
+        if not is_super and current_user.department_id:
+            q = q.filter(models.Complaint.department_id == current_user.department_id)
         if user_id:
             q = q.filter(models.Complaint.user_id == user_id)
 
@@ -282,25 +311,41 @@ def list_complaints(
 # ---------------------------------------------------------------------------
 # GET /api/complaints/{id} — get single complaint with ownership check
 # ---------------------------------------------------------------------------
-@router.get("/{complaint_id}")
+@router.get("/{complaint_id}", response_model=schemas.ComplaintResponse)
 def get_complaint(
     complaint_id: str,
     db:           Session              = Depends(get_db),
     current_user: Optional[models.User]= Depends(get_current_user_optional),
 ):
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to view complaint details.",
+        )
+
     c = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
-    # If logged in, enforce ownership/assignment rules:
-    if current_user:
-        if current_user.role == "citizen" and c.user_id != current_user.id:
-            # Return 404 so we do not leak whether another user's complaint exists
+    # Enforce ownership/assignment rules:
+    if current_user.role == "citizen":
+        if c.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Complaint not found")
-        elif current_user.role == "worker":
-            worker_ids = _get_worker_ids(db, current_user.id)
-            if c.worker_id not in worker_ids:
-                raise HTTPException(status_code=404, detail="Complaint not found")
+    elif current_user.role == "worker":
+        worker_ids = _get_worker_ids(db, current_user.id)
+        if not c.worker_id or c.worker_id not in worker_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Complaint not found",
+            )
+    elif current_user.role == "admin":
+        is_super = _is_super_admin(current_user)
+        if not is_super and current_user.department_id:
+            if c.department_id and c.department_id != current_user.department_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: Complaint belongs to a different municipal department.",
+                )
 
     return c
 
@@ -323,8 +368,16 @@ def get_complaint_history(
         raise HTTPException(status_code=404, detail="Complaint not found")
     elif current_user.role == "worker":
         worker_ids = _get_worker_ids(db, current_user.id)
-        if c.worker_id not in worker_ids:
+        if not c.worker_id or c.worker_id not in worker_ids:
             raise HTTPException(status_code=404, detail="Complaint not found")
+    elif current_user.role == "admin":
+        is_super = _is_super_admin(current_user)
+        if not is_super and current_user.department_id:
+            if c.department_id and c.department_id != current_user.department_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: Complaint belongs to a different municipal department.",
+                )
 
     history = (
         db.query(models.StatusHistory)
@@ -336,44 +389,164 @@ def get_complaint_history(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/complaints/{id}/assign — assign field worker to complaint
+# ---------------------------------------------------------------------------
+@router.post("/{complaint_id}/assign", response_model=schemas.ComplaintResponse)
+def assign_complaint_worker(
+    complaint_id: str,
+    payload:      schemas.ComplaintAssignRequest,
+    db:           Session     = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Only administrators can dispatch field workers.",
+        )
+
+    perms = [p.strip() for p in (current_user.permissions or "").split(",") if p.strip()]
+    is_super = _is_super_admin(current_user)
+    if not is_super and "ASSIGN_WORKERS" not in perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You do not have permission to dispatch field workers.",
+        )
+
+    c = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+
+    # Department scoping for Co-Admin on complaint
+    if not is_super and current_user.department_id:
+        if c.department_id and c.department_id != current_user.department_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You can only assign workers to complaints within your department.",
+            )
+
+    worker = db.query(models.Worker).filter(models.Worker.id == payload.worker_id).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Field worker not found")
+
+    # Department scoping for Co-Admin on worker
+    if not is_super and current_user.department_id:
+        if worker.department_id != current_user.department_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Cannot assign a worker outside your department.",
+            )
+
+    # Verify worker active account
+    if worker.user_id:
+        w_user = db.query(models.User).filter(models.User.id == worker.user_id).first()
+        if w_user and not w_user.is_active:
+            raise HTTPException(
+                status_code=400,
+                detail="Worker account is inactive and cannot be assigned tasks.",
+            )
+
+    c.worker_id = worker.id
+    c.status = "assigned"
+    c.assigned_officer = current_user.name
+    if not c.department_id and worker.department_id:
+        c.department_id = worker.department_id
+        if worker.department:
+            c.department_name = worker.department.name
+
+    notes = payload.notes or f"Assigned to field worker {worker.name} ({worker.worker_code or 'ID: '+str(worker.id)}) by {current_user.name}."
+    _record_history(db, complaint_id, "assigned", current_user, notes)
+
+    audit = models.AdminAuditLog(
+        admin_id    = current_user.id,
+        admin_code  = current_user.admin_code or "ADMIN",
+        admin_name  = current_user.name,
+        action      = "ASSIGN_WORKER",
+        target_type = "COMPLAINT",
+        target_id   = complaint_id,
+        details     = f"Assigned complaint {complaint_id} to worker {worker.name} ({worker.worker_code or 'ID:'+str(worker.id)}).",
+    )
+    db.add(audit)
+
+    db.commit()
+    db.refresh(c)
+    return c
+
+
+# ---------------------------------------------------------------------------
 # PATCH /api/complaints/{id}/status — update status (Worker or Admin only)
 # ---------------------------------------------------------------------------
-@router.patch("/{complaint_id}/status")
+@router.patch("/{complaint_id}/status", response_model=schemas.ComplaintResponse)
 def update_status(
     complaint_id: str,
     update:       schemas.ComplaintUpdate,
     db:           Session              = Depends(get_db),
     current_user: Optional[models.User]= Depends(get_current_user_optional),
 ):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
     c = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
+    is_super = _is_super_admin(current_user)
+
     # Role check
-    if current_user:
-        if current_user.role == "citizen":
+    if current_user.role == "citizen":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Citizens are not authorized to update complaint status.",
+        )
+    elif current_user.role == "worker":
+        worker_ids = _get_worker_ids(db, current_user.id)
+        if not c.worker_id or c.worker_id not in worker_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Citizens are not authorized to update complaint status.",
+                detail="You can only update complaints assigned to you.",
             )
-        elif current_user.role == "worker":
-            worker_ids = _get_worker_ids(db, current_user.id)
-            if c.worker_id and c.worker_id not in worker_ids:
+        if update.worker_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Workers cannot assign or reassign complaints.",
+            )
+    elif current_user.role == "admin":
+        if not is_super and current_user.department_id:
+            if c.department_id and c.department_id != current_user.department_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You can only update complaints assigned to you.",
+                    detail="Access denied: You can only update complaints within your department.",
                 )
+
+        if update.worker_id is not None:
+            perms = [p.strip() for p in (current_user.permissions or "").split(",") if p.strip()]
+            if not is_super and "ASSIGN_WORKERS" not in perms:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You do not have permission to assign field workers.",
+                )
+            worker = db.query(models.Worker).filter(models.Worker.id == update.worker_id).first()
+            if not worker:
+                raise HTTPException(status_code=404, detail="Field worker not found")
+            if not is_super and current_user.department_id:
+                if worker.department_id != current_user.department_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access denied: Cannot assign a worker from another department.",
+                    )
+            c.worker_id = worker.id
+            c.assigned_officer = current_user.name
+            if not c.department_id and worker.department_id:
+                c.department_id = worker.department_id
+                if worker.department:
+                    c.department_name = worker.department.name
 
     old_status = c.status
     if update.status:
         c.status = update.status
-    if update.worker_id is not None:
-        c.worker_id = update.worker_id
     if update.severity:
         c.severity       = update.severity
         c.priority_score = calculate_priority(c)
 
-    # Record history
     notes = update.notes or f"Status changed from '{old_status}' to '{c.status}'."
     _record_history(db, complaint_id, c.status, current_user, notes)
 
@@ -393,15 +566,33 @@ async def resolve_complaint(
     db:           Session              = Depends(get_db),
     current_user: Optional[models.User]= Depends(get_current_user_optional),
 ):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
     c = db.query(models.Complaint).filter(models.Complaint.id == complaint_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
-    if current_user and current_user.role == "citizen":
+    if current_user.role == "citizen":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Citizens cannot mark complaints as resolved. Field workers or municipal admins must verify.",
         )
+    elif current_user.role == "worker":
+        worker_ids = _get_worker_ids(db, current_user.id)
+        if not c.worker_id or c.worker_id not in worker_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You can only resolve complaints assigned to you.",
+            )
+    elif current_user.role == "admin":
+        is_super = _is_super_admin(current_user)
+        if not is_super and current_user.department_id:
+            if c.department_id and c.department_id != current_user.department_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You can only resolve complaints within your department.",
+                )
 
     after_path   = _save_upload(after_image, prefix="after_") if after_image else None
     verification = verify_resolution(c.category, notes)
@@ -446,6 +637,7 @@ async def resolve_complaint(
         "message":      "Complaint resolved successfully",
         "verification": verification,
         "complaint_id": complaint_id,
+        "status":       "resolved",
     }
 
 

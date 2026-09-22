@@ -83,8 +83,12 @@ def create_co_admin(
     if existing and existing.role == "admin":
         raise HTTPException(400, f"An administrator account already exists for phone {phone} (ID: {existing.admin_code}).")
 
+    # Password validation
+    raw_password = (payload.password or "").strip()
+    if len(raw_password) < 6:
+        raise HTTPException(400, "Password is required and must be at least 6 characters long.")
+
     admin_code = _generate_admin_code(db)
-    temp_password = _generate_temp_password(10)
     perms_str = ",".join(payload.permissions)
 
     if existing:
@@ -96,7 +100,7 @@ def create_co_admin(
         existing.permissions          = perms_str
         existing.is_active            = True
         existing.must_change_password = True
-        existing.password_hash        = hash_password(temp_password)
+        existing.password_hash        = hash_password(raw_password)
         existing.created_by_user_id   = current_user.id
         db_admin = existing
     else:
@@ -111,12 +115,12 @@ def create_co_admin(
             permissions          = perms_str,
             is_active            = True,
             must_change_password = True,
-            password_hash        = hash_password(temp_password),
+            password_hash        = hash_password(raw_password),
             created_by_user_id   = current_user.id,
         )
         db.add(db_admin)
 
-    # Record in Audit Log
+    # Record in Audit Log (Without exposing plain password)
     audit = models.AdminAuditLog(
         admin_id    = current_user.id,
         admin_code  = current_user.admin_code or "SUPER_ADMIN",
@@ -124,7 +128,7 @@ def create_co_admin(
         action      = "CREATE_CO_ADMIN",
         target_type = "ADMIN",
         target_id   = admin_code,
-        details     = f"Created {payload.admin_level or 'CO_ADMIN'} account for {payload.name} ({admin_code}) with permissions: [{perms_str}].",
+        details     = f"Created {payload.admin_level or 'CO_ADMIN'} account for {payload.name} ({admin_code}) with permissions: [{perms_str}]. Password set by Super Admin.",
     )
     db.add(audit)
 
@@ -132,16 +136,78 @@ def create_co_admin(
     db.refresh(db_admin)
 
     return {
-        "message":            f"Administrator account {admin_code} created successfully.",
-        "admin_code":         admin_code,
-        "temporary_password": temp_password,
-        "name":               db_admin.name,
-        "phone":              db_admin.phone,
-        "email":              db_admin.email,
-        "admin_level":        db_admin.admin_level,
-        "permissions":        payload.permissions,
+        "message":              f"Administrator account {admin_code} created successfully.",
+        "admin_code":           admin_code,
+        "name":                 db_admin.name,
+        "phone":                db_admin.phone,
+        "email":                db_admin.email,
+        "admin_level":          db_admin.admin_level,
+        "permissions":          payload.permissions,
+        "status_message":       "Password set successfully by Super Admin",
         "must_change_password": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/workers — List eligible field workers for task assignment
+# ---------------------------------------------------------------------------
+@router.get("/workers", response_model=List[schemas.WorkerResponse])
+def list_workers(
+    complaint_id:  Optional[str] = None,
+    department_id: Optional[int] = None,
+    db:            Session       = Depends(get_db),
+    current_user:  models.User   = Depends(get_current_user),
+):
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Only administrators can view field workers for dispatch.",
+        )
+
+    perms = [p.strip() for p in (current_user.permissions or "").split(",") if p.strip()]
+    is_super = current_user.admin_level == "SUPER_ADMIN" or "ALL" in perms or "MANAGE_ADMINS" in perms
+    if not is_super and "ASSIGN_WORKERS" not in perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You do not have permission to dispatch field workers.",
+        )
+
+    q = db.query(models.Worker)
+
+    # Department and Jurisdiction Scoping:
+    # Co-Admin is strictly scoped to their assigned department
+    if not is_super and current_user.department_id:
+        q = q.filter(models.Worker.department_id == current_user.department_id)
+    elif department_id:
+        q = q.filter(models.Worker.department_id == department_id)
+
+    # Active Worker Verification:
+    # If the worker has a linked User account, ensure the account is active
+    q = q.outerjoin(models.User, models.Worker.user_id == models.User.id).filter(
+        (models.User.id == None) | (models.User.is_active == True)
+    )
+
+    workers = q.all()
+
+    result = []
+    for w in workers:
+        dept_name = w.department.name if w.department else "General Administration"
+        status_label = "Available" if w.is_available else "On Duty"
+        code = w.worker_code or f"WRK-{w.id:05d}"
+        result.append(
+            schemas.WorkerResponse(
+                id=w.id,
+                worker_code=code,
+                name=w.name,
+                department_id=w.department_id,
+                department_name=dept_name,
+                ward_number=w.ward_number or "Ward 3",
+                is_available=bool(w.is_available),
+                status=status_label,
+            )
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------

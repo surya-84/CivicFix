@@ -4,7 +4,7 @@ import toast from 'react-hot-toast'
 import {
   Shield, ShieldAlert, ShieldCheck, UserPlus, Key, Copy, Check,
   RefreshCw, Lock, Unlock, Eye, Users, FileText, Settings,
-  AlertCircle, CheckCircle2, ChevronRight, Clock, Building, Phone, Mail
+  AlertCircle, CheckCircle2, ChevronRight, Clock, Building, Phone, Mail, X
 } from 'lucide-react'
 
 const AVAILABLE_PERMISSIONS = [
@@ -32,9 +32,37 @@ export default function AdminManagementTab({ currentUser }) {
     phone: '',
     email: '',
     department_id: '',
+    password: '',
+    confirmPassword: '',
     permissions: ['VIEW_COMPLAINTS', 'MANAGE_COMPLAINTS', 'ASSIGN_WORKERS'],
   })
   const [submitting, setSubmitting] = useState(false)
+
+  const handleOpenCreateModal = () => {
+    setCreateForm({
+      name: '',
+      phone: '',
+      email: '',
+      department_id: '',
+      password: '',
+      confirmPassword: '',
+      permissions: ['VIEW_COMPLAINTS', 'MANAGE_COMPLAINTS', 'ASSIGN_WORKERS'],
+    })
+    setShowCreateModal(true)
+  }
+
+  const handleCloseCreateModal = () => {
+    setShowCreateModal(false)
+    setCreateForm({
+      name: '',
+      phone: '',
+      email: '',
+      department_id: '',
+      password: '',
+      confirmPassword: '',
+      permissions: ['VIEW_COMPLAINTS', 'MANAGE_COMPLAINTS', 'ASSIGN_WORKERS'],
+    })
+  }
 
   // Generated Credentials Modal
   const [generatedCreds, setGeneratedCreds] = useState(null)
@@ -113,6 +141,14 @@ export default function AdminManagementTab({ currentUser }) {
       toast.error('Mobile number must be at least 10 digits')
       return
     }
+    if (!createForm.password || createForm.password.length < 6) {
+      toast.error('Temporary password must be at least 6 characters')
+      return
+    }
+    if (createForm.password !== createForm.confirmPassword) {
+      toast.error('Temporary password and confirm password do not match')
+      return
+    }
 
     try {
       setSubmitting(true)
@@ -123,6 +159,7 @@ export default function AdminManagementTab({ currentUser }) {
         department_id: createForm.department_id ? parseInt(createForm.department_id) : null,
         admin_level: 'CO_ADMIN',
         permissions: createForm.permissions,
+        password: createForm.password,
       }
 
       const res = await axios.post('/api/admin/admins', payload, { headers: authHeaders })
@@ -133,6 +170,8 @@ export default function AdminManagementTab({ currentUser }) {
         phone: '',
         email: '',
         department_id: '',
+        password: '',
+        confirmPassword: '',
         permissions: ['VIEW_COMPLAINTS', 'MANAGE_COMPLAINTS', 'ASSIGN_WORKERS'],
       })
       toast.success('Co-Admin account created successfully!')
@@ -168,7 +207,7 @@ export default function AdminManagementTab({ currentUser }) {
 
   const handleCopyCredentials = () => {
     if (!generatedCreds) return
-    const text = `CivicFix Co-Admin Portal Credentials\nName: ${generatedCreds.name}\nAdmin ID: ${generatedCreds.admin_code}\nTemporary Password: ${generatedCreds.temporary_password}\nLogin URL: http://localhost:5173/login`
+    const text = `CivicFix Co-Admin Portal Credentials\nName: ${generatedCreds.name}\nAdmin ID: ${generatedCreds.admin_code}\nTemporary Password: (Configured by Super Admin)\nLogin URL: ${window.location.origin}/login`
     navigator.clipboard.writeText(text)
     setCopied(true)
     toast.success('Credentials copied to clipboard!')
@@ -207,7 +246,7 @@ export default function AdminManagementTab({ currentUser }) {
           <div className="flex items-center gap-3 shrink-0">
             {isSuperAdmin && (
               <button
-                onClick={() => setShowCreateModal(true)}
+                onClick={handleOpenCreateModal}
                 className="btn-primary py-3 px-5 text-sm font-bold shadow-lg shadow-blue-500/25 flex items-center gap-2 hover:scale-[1.02] active:scale-[0.98] transition-all"
               >
                 <UserPlus className="w-4 h-4" />
@@ -508,27 +547,53 @@ export default function AdminManagementTab({ currentUser }) {
       {/* MODAL 1: CREATE CO-ADMIN */}
       {/* ------------------------------------------------------------- */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) handleCloseCreateModal()
+          }}
+        >
           <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full border border-slate-100 overflow-hidden">
             {/* Header */}
-            <div className="bg-gradient-to-br from-indigo-900 to-slate-900 p-6 text-white">
+            <div className="bg-gradient-to-br from-indigo-900 to-slate-900 p-6 text-white relative">
+              <button
+                type="button"
+                onClick={handleCloseCreateModal}
+                className="absolute top-5 right-5 p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 active:bg-white/20 transition-all cursor-pointer"
+                title="Exit"
+                aria-label="Exit"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
               <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center mb-3">
                 <UserPlus className="w-6 h-6 text-indigo-300" />
               </div>
               <h3 className="text-xl font-bold">Issue New Co-Admin Account</h3>
-              <p className="text-xs text-indigo-200 mt-1">
+              <p className="text-xs text-indigo-200 mt-1 pr-8">
                 Generates a unique Admin ID (ADM-XXXXXX) and a secure temporary password with custom municipal permissions.
               </p>
             </div>
 
             {/* Form */}
-            <form onSubmit={handleCreateSubmit} className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+            <form onSubmit={handleCreateSubmit} autoComplete="off" className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+              {/* Decoy fields to trap aggressive browser password manager autofill */}
+              <input type="text" name="chrome_prevent_autofill_username" tabIndex={-1} aria-hidden="true" style={{ position: 'absolute', opacity: 0, height: 0, width: 0, pointerEvents: 'none' }} autoComplete="off" readOnly />
+              <input type="password" name="chrome_prevent_autofill_password" tabIndex={-1} aria-hidden="true" style={{ position: 'absolute', opacity: 0, height: 0, width: 0, pointerEvents: 'none' }} autoComplete="off" readOnly />
+
               <div>
                 <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
                   Full Legal Name *
                 </label>
                 <input
                   type="text"
+                  name="coadmin_legal_full_name"
+                  id="coadmin_legal_full_name"
+                  autoComplete="new-off"
+                  autoCorrect="off"
+                  spellCheck="false"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
                   required
                   value={createForm.name}
                   onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
@@ -544,6 +609,11 @@ export default function AdminManagementTab({ currentUser }) {
                   </label>
                   <input
                     type="tel"
+                    name="coadmin_mobile_phone_no"
+                    id="coadmin_mobile_phone_no"
+                    autoComplete="new-off"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                     required
                     maxLength={10}
                     value={createForm.phone}
@@ -559,6 +629,13 @@ export default function AdminManagementTab({ currentUser }) {
                   </label>
                   <input
                     type="email"
+                    name="coadmin_official_kmc_email"
+                    id="coadmin_official_kmc_email"
+                    autoComplete="new-off"
+                    autoCorrect="off"
+                    spellCheck="false"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                     value={createForm.email}
                     onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
                     placeholder="officer@kmc.gov.in"
@@ -581,6 +658,48 @@ export default function AdminManagementTab({ currentUser }) {
                   <option value="2">Water Works Dept – KMC (Ward 3)</option>
                   <option value="3">Drainage Dept – KMC (Ward 3)</option>
                 </select>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Temporary Password *
+                  </label>
+                  <input
+                    type="password"
+                    name="coadmin_temporary_secret_key"
+                    id="coadmin_temporary_secret_key"
+                    autoComplete="new-password"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    required
+                    minLength={6}
+                    value={createForm.password}
+                    onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
+                    placeholder="Min 6 characters"
+                    className="input-field text-sm font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Confirm Password *
+                  </label>
+                  <input
+                    type="password"
+                    name="coadmin_confirm_secret_key"
+                    id="coadmin_confirm_secret_key"
+                    autoComplete="new-password"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    required
+                    minLength={6}
+                    value={createForm.confirmPassword}
+                    onChange={(e) => setCreateForm({ ...createForm, confirmPassword: e.target.value })}
+                    placeholder="Repeat password"
+                    className="input-field text-sm font-mono"
+                  />
+                </div>
               </div>
 
               {/* Permissions checkboxes */}
@@ -625,8 +744,8 @@ export default function AdminManagementTab({ currentUser }) {
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
                 <button
                   type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="btn-secondary text-xs py-2.5 px-4"
+                  onClick={handleCloseCreateModal}
+                  className="btn-secondary text-xs py-2.5 px-4 cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -680,9 +799,9 @@ export default function AdminManagementTab({ currentUser }) {
                   <span className="font-black text-indigo-600 text-base">{generatedCreds.admin_code}</span>
                 </div>
                 <div>
-                  <span className="text-slate-400 font-sans block text-[10px] font-bold uppercase">Temporary Password</span>
-                  <span className="font-black text-amber-600 text-base tracking-wider bg-amber-50 px-2 py-0.5 rounded border border-amber-200 inline-block">
-                    {generatedCreds.temporary_password}
+                  <span className="text-slate-400 font-sans block text-[10px] font-bold uppercase">Temporary Password Status</span>
+                  <span className="font-bold text-emerald-700 text-xs bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 inline-block">
+                    {generatedCreds.status_message || 'Password set successfully by Super Admin'}
                   </span>
                 </div>
               </div>
@@ -690,7 +809,7 @@ export default function AdminManagementTab({ currentUser }) {
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <span>
-                  The system enforces a mandatory password reset dialog the first time this account signs into the CivicFix portal.
+                  The officer can sign in using their <strong>Admin ID ({generatedCreds.admin_code})</strong>, <strong>Mobile Number</strong>, or <strong>Email</strong> with the temporary password you set. A mandatory password reset dialog will appear upon first login.
                 </span>
               </div>
 

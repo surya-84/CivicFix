@@ -24,7 +24,6 @@ const KAKINADA_HOT_ZONES = [
   { lat: 16.9930, lng: 82.2200 },
 ]
 
-const WORKERS = ['Suresh Naidu', 'Lakshmi Prasad', 'Ravi Kumar', 'Anjali Devi']
 
 const STATUS_COLORS = {
   pending:     '#EF4444',
@@ -161,6 +160,8 @@ function PriorityQueueTab({ queue, onRefresh }) {
   const [expanded, setExpanded] = useState(null)
   const [assigning, setAssigning] = useState(null)
   const [sevFilter, setSevFilter] = useState('ALL')
+  const [workers, setWorkers] = useState([])
+  const [loadingWorkers, setLoadingWorkers] = useState(false)
 
   const filtered = (queue || [])
     .filter(c => sevFilter === 'ALL' || c.severity === sevFilter)
@@ -168,19 +169,53 @@ function PriorityQueueTab({ queue, onRefresh }) {
 
   const handleStatus = async (id, status) => {
     try {
-      await axios.patch(`/api/complaints/${id}/status`, { status })
+      const token = localStorage.getItem('civicfix_token')
+      const user = JSON.parse(localStorage.getItem('civicfix_user') || '{}')
+      const headers = (token || user?.access_token) ? { Authorization: `Bearer ${token || user.access_token}` } : {}
+      await axios.patch(`/api/complaints/${id}/status`, { status }, { headers })
       toast.success(`Status → ${status}`)
       onRefresh()
-    } catch { toast.error('Update failed') }
+    } catch (err) {
+      const msg = err.response?.data?.detail || 'Update failed'
+      toast.error(msg)
+    }
+  }
+
+  const handleAssignClick = async (complaintId) => {
+    if (assigning === complaintId) {
+      setAssigning(null)
+      return
+    }
+    setAssigning(complaintId)
+    setLoadingWorkers(true)
+    try {
+      const token = localStorage.getItem('civicfix_token')
+      const user = JSON.parse(localStorage.getItem('civicfix_user') || '{}')
+      const headers = (token || user?.access_token) ? { Authorization: `Bearer ${token || user.access_token}` } : {}
+      const res = await axios.get(`/api/admin/workers?complaint_id=${complaintId}`, { headers })
+      setWorkers(res.data || [])
+    } catch (err) {
+      console.error('Failed to load eligible workers:', err)
+      toast.error('Failed to load eligible workers')
+      setWorkers([])
+    } finally {
+      setLoadingWorkers(false)
+    }
   }
 
   const handleAssign = async (id, worker) => {
     try {
-      await axios.patch(`/api/complaints/${id}/status`, { status:'assigned', worker_id: worker })
-      toast.success(`Assigned to ${worker}`)
+      const token = localStorage.getItem('civicfix_token')
+      const user = JSON.parse(localStorage.getItem('civicfix_user') || '{}')
+      const headers = (token || user?.access_token) ? { Authorization: `Bearer ${token || user.access_token}` } : {}
+      await axios.post(`/api/complaints/${id}/assign`, { worker_id: worker.id }, { headers })
+      toast.success(`Assigned to ${worker.name} (${worker.worker_code})`)
       setAssigning(null)
       onRefresh()
-    } catch { toast.error('Assignment failed') }
+    } catch (err) {
+      const msg = err.response?.data?.detail || 'Assignment failed'
+      toast.error(msg)
+    }
   }
 
   return (
@@ -224,19 +259,40 @@ function PriorityQueueTab({ queue, onRefresh }) {
                       <option value="in_progress">In Progress</option>
                       <option value="resolved">Resolved</option>
                     </select>
+                    {c.worker_name && (
+                      <span className="text-xs bg-emerald-50 text-emerald-700 font-semibold px-2.5 py-1 rounded-lg border border-emerald-200">
+                        👷 {c.worker_name} ({c.worker_code})
+                      </span>
+                    )}
                     <div className="relative">
-                      <button onClick={() => setAssigning(assigning === c.id ? null : c.id)}
+                      <button onClick={() => handleAssignClick(c.id)}
                         className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold px-3 py-1 rounded-lg border border-indigo-200">
-                        Assign Worker
+                        {c.worker_name ? 'Reassign Worker' : 'Assign Worker'}
                       </button>
                       {assigning === c.id && (
-                        <div className="absolute left-0 top-8 z-20 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden min-w-[140px]">
-                          {WORKERS.map(w => (
-                            <button key={w} onClick={() => handleAssign(c.id, w)}
-                              className="block w-full text-left px-4 py-2 text-sm hover:bg-indigo-50 text-slate-700">
-                              {w}
-                            </button>
-                          ))}
+                        <div className="absolute left-0 top-8 z-20 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden min-w-[200px] max-h-60 overflow-y-auto">
+                          {loadingWorkers ? (
+                            <div className="px-4 py-3 text-xs text-slate-400 italic">
+                              Loading eligible workers...
+                            </div>
+                          ) : workers.length === 0 ? (
+                            <div className="px-4 py-3 text-xs text-slate-400 italic">
+                              No eligible workers available
+                            </div>
+                          ) : (
+                            workers.map(w => (
+                              <button key={w.id} onClick={() => handleAssign(c.id, w)}
+                                className="block w-full text-left px-4 py-2.5 text-xs hover:bg-indigo-50 text-slate-700 border-b border-slate-50 last:border-0 transition-colors">
+                                <div className="font-bold text-slate-800 flex items-center justify-between gap-2">
+                                  <span>{w.name}</span>
+                                  <span className="font-mono text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">{w.worker_code}</span>
+                                </div>
+                                <div className="text-[10px] text-slate-500 mt-0.5">
+                                  {w.department_name || 'General Municipal'} {w.ward_number ? `· Ward ${w.ward_number}` : ''}
+                                </div>
+                              </button>
+                            ))
+                          )}
                         </div>
                       )}
                     </div>
@@ -254,6 +310,7 @@ function PriorityQueueTab({ queue, onRefresh }) {
                   <div><span className="font-semibold text-slate-400">Ward:</span> {c.ward_number || 'N/A'}</div>
                   <div><span className="font-semibold text-slate-400">Dept:</span> {c.department_name || 'N/A'}</div>
                   <div><span className="font-semibold text-slate-400">Officer:</span> {c.assigned_officer || 'Unassigned'}</div>
+                  <div><span className="font-semibold text-slate-400">Assigned Worker:</span> {c.worker_name ? `${c.worker_name} (${c.worker_code})` : 'Unassigned'}</div>
                   <div><span className="font-semibold text-slate-400">Reports:</span> {c.report_count || 1}</div>
                   <div className="col-span-2"><span className="font-semibold text-slate-400">AI:</span> {c.ai_description || 'N/A'}</div>
                   <div><span className="font-semibold text-slate-400">Confidence:</span> {c.ai_confidence ? `${Math.round(c.ai_confidence*100)}%` : 'N/A'}</div>
@@ -295,9 +352,12 @@ export default function MunicipalDashboard() {
 
   const fetchAll = useCallback(async () => {
     try {
+      const user = JSON.parse(localStorage.getItem('civicfix_user') || '{}')
+      const token = localStorage.getItem('civicfix_token')
+      const headers = (token || user?.access_token) ? { Authorization: `Bearer ${token || user.access_token}` } : {}
       const [s, q] = await Promise.all([
-        axios.get('/api/dashboard/stats'),
-        axios.get('/api/dashboard/priority-queue'),
+        axios.get('/api/dashboard/stats', { headers }),
+        axios.get('/api/dashboard/priority-queue', { headers }),
       ])
       setStats(s.data)
       setQueue(q.data)

@@ -148,6 +148,14 @@ def approve_volunteer(
     db:             Session     = Depends(get_db),
     current_user:   models.User = Depends(require_role("admin")),
 ):
+    perms = [p.strip() for p in (current_user.permissions or "").split(",") if p.strip()]
+    is_super = current_user.admin_level == "SUPER_ADMIN" or "ALL" in perms or "MANAGE_ADMINS" in perms
+    if not is_super and "MANAGE_VOLUNTEERS" not in perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You do not have permission to review or approve volunteer applications.",
+        )
+
     vol = db.query(models.VolunteerApplication).filter(
         models.VolunteerApplication.application_id == application_id
     ).first()
@@ -164,25 +172,7 @@ def approve_volunteer(
     # 1. Generate unique Worker ID (e.g. WRK-10482)
     worker_code = f"WRK-{random.randint(10000, 99999)}"
 
-    # 2. Check if user account already exists (e.g. was a citizen before)
-    user = db.query(models.User).filter(models.User.phone == vol.phone).first()
-    if user:
-        user.role = "worker"
-        user.worker_code = worker_code
-    else:
-        user = models.User(
-            name          = vol.name,
-            phone         = vol.phone,
-            email         = vol.email,
-            role          = "worker",
-            worker_code   = worker_code,
-            password_hash = vol.password_hash,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    # 3. Find matching municipal Department
+    # 2. Find matching municipal Department
     dept = None
     if action.department_id:
         dept = db.query(models.Department).filter(models.Department.id == action.department_id).first()
@@ -196,22 +186,68 @@ def approve_volunteer(
 
     dept_id = dept.id if dept else 1
 
-    # 4. Create Worker entity
-    new_worker = models.Worker(
-        worker_code   = worker_code,
-        name          = vol.name,
-        department_id = dept_id,
-        ward_number   = action.ward_number or vol.ward or "3",
-        user_id       = user.id,
-        is_available  = True,
-    )
-    db.add(new_worker)
+    # 3. Check if user account already exists (e.g. was a citizen before)
+    user = db.query(models.User).filter(models.User.phone == vol.phone).first()
+    if user:
+        user.role = "worker"
+        user.worker_code = worker_code
+        user.is_active = True
+        user.department_id = dept_id
+    else:
+        user = models.User(
+            name          = vol.name,
+            phone         = vol.phone,
+            email         = vol.email,
+            role          = "worker",
+            worker_code   = worker_code,
+            is_active     = True,
+            department_id = dept_id,
+            password_hash = vol.password_hash,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    # 4. Create or update Worker entity
+    existing_worker = db.query(models.Worker).filter(
+        (models.Worker.user_id == user.id) | (models.Worker.worker_code == worker_code)
+    ).first()
+
+    if existing_worker:
+        existing_worker.worker_code   = worker_code
+        existing_worker.name          = vol.name
+        existing_worker.department_id = dept_id
+        existing_worker.ward_number   = action.ward_number or vol.ward or "3"
+        existing_worker.user_id       = user.id
+        existing_worker.is_available  = True
+    else:
+        new_worker = models.Worker(
+            worker_code   = worker_code,
+            name          = vol.name,
+            department_id = dept_id,
+            ward_number   = action.ward_number or vol.ward or "3",
+            user_id       = user.id,
+            is_available  = True,
+        )
+        db.add(new_worker)
 
     # 5. Update Application record
     vol.status              = "approved"
     vol.worker_id_generated = worker_code
     vol.admin_notes         = action.admin_notes or f"Approved by {current_user.name}. Assigned to {dept.name if dept else 'Municipal Team'}."
     vol.reviewed_at         = datetime.utcnow()
+
+    # 6. Record in Admin Audit Log
+    audit = models.AdminAuditLog(
+        admin_id    = current_user.id,
+        admin_code  = current_user.admin_code or "ADMIN",
+        admin_name  = current_user.name,
+        action      = "APPROVE_VOLUNTEER",
+        target_type = "VOLUNTEER",
+        target_id   = vol.application_id,
+        details     = f"Approved volunteer {vol.name} ({vol.application_id}). Issued Worker ID {worker_code} for department {dept.name if dept else 'Municipal Team'}.",
+    )
+    db.add(audit)
 
     db.commit()
     db.refresh(vol)

@@ -122,19 +122,21 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
 def login(credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     ident = (credentials.login_id or credentials.phone or "").strip()
     if not ident:
-        raise HTTPException(status_code=400, detail="Mobile number, Worker ID, or Admin ID required")
+        raise HTTPException(status_code=400, detail="Mobile number, Email, Worker ID, or Admin ID required")
 
-    # Look up by phone number OR worker_code OR admin_code
+    # Look up by phone number OR email OR worker_code OR admin_code
     user = db.query(models.User).filter(
         (models.User.phone == ident) | 
+        (models.User.email == ident) |
         (models.User.worker_code == ident) |
         (models.User.admin_code == ident)
     ).first()
 
     if not user:
-        # Check if there is an unapproved volunteer application for this phone
+        # Check if there is an unapproved volunteer application for this phone or email
         vol = db.query(models.VolunteerApplication).filter(
-            models.VolunteerApplication.phone == ident
+            (models.VolunteerApplication.phone == ident) |
+            (models.VolunteerApplication.email == ident)
         ).first()
         if vol:
             if vol.status == "pending":

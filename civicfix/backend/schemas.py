@@ -70,10 +70,30 @@ class StatusHistoryResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ComplaintAssignRequest(BaseModel):
+    worker_id: int
+    notes: Optional[str] = None
+
+
+class WorkerResponse(BaseModel):
+    id: int
+    worker_code: Optional[str] = None
+    name: str
+    department_id: Optional[int] = None
+    department_name: Optional[str] = None
+    ward_number: Optional[str] = None
+    is_available: bool = True
+    status: str = "Available"
+
+    model_config = {"from_attributes": True}
+
+
 class ComplaintResponse(BaseModel):
     id: str
     user_id: Optional[int] = None
     worker_id: Optional[int] = None
+    worker_name: Optional[str] = None
+    worker_code: Optional[str] = None
     category: str
     description: Optional[str] = None
     latitude: float
@@ -148,6 +168,7 @@ class AdminCreate(BaseModel):
     department_id: Optional[int] = None
     admin_level: str = "CO_ADMIN"
     permissions: List[str] = []
+    password: str
 
 
 class AdminResponse(BaseModel):

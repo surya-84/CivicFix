@@ -102,8 +102,17 @@ class Complaint(Base):
     resolved_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="complaints")
+    worker = relationship("Worker", foreign_keys=[worker_id])
     resolution = relationship("Resolution", back_populates="complaint", uselist=False)
     history = relationship("StatusHistory", back_populates="complaint", order_by="StatusHistory.timestamp.asc()")
+
+    @property
+    def worker_name(self):
+        return self.worker.name if self.worker else None
+
+    @property
+    def worker_code(self):
+        return self.worker.worker_code if self.worker else None
 
 
 class Resolution(Base):

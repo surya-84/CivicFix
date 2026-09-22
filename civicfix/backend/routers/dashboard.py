@@ -1,3 +1,4 @@
+from typing import List
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -5,6 +6,7 @@ from datetime import datetime, timedelta
 
 from database import get_db
 import models
+import schemas
 
 router = APIRouter()
 
@@ -75,7 +77,7 @@ def get_map_data(db: Session = Depends(get_db)):
     return {"type": "FeatureCollection", "features": features}
 
 
-@router.get("/priority-queue")
+@router.get("/priority-queue", response_model=List[schemas.ComplaintResponse])
 def priority_queue(db: Session = Depends(get_db)):
     return (
         db.query(models.Complaint)
